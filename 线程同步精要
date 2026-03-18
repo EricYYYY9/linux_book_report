@@ -1,0 +1,179 @@
+1. “不手工调用 lock() 和 unlock()，一切交给栈上的 Guard 对象的构造和析构函数负责”
+意思是：
+
+不要自己写：
+mutex.lock();
+...
+mutex.unlock();
+而是写成：
+std::lock_guard<std::mutex> guard(mutex);
+这里 guard 是一个栈对象。
+
+它会自动做两件事：
+
+构造时加锁
+析构时解锁
+所以你不用手动写 unlock()。
+
+2. “Guard对象的生命期正好等于临界区”
+什么是临界区
+临界区就是：
+
+那段需要被锁保护的代码区域
+比如：
+
+{
+    std::lock_guard<std::mutex> guard(mutex);
+    // 这里就是临界区
+    shared_data++;
+}
+这里临界区就是：
+
+guard 创建之后
+到这个代码块结束之前
+因为在这段时间里锁一直持有。
+
+3. “分析对象在什么时候析构是 C++ 程序员的基本功”
+这句话很重要。
+
+因为 C++ 里栈对象会在离开作用域时自动析构。
+
+例如：
+
+void foo() {
+    std::lock_guard<std::mutex> guard(mutex);
+    // 临界区
+} // 这里 guard 析构，自动 unlock
+也就是说：
+
+只要你知道对象什么时候离开作用域
+你就知道锁什么时候释放
+所以会不会正确解锁，关键看你能不能判断：
+
+对象何时析构
+作用域何时结束
+4. “这样我们保证始终在同一个函数同一个 scope 里对某个 mutex 加锁和解锁”
+这句话的意思是：
+
+加锁和解锁不再分散在程序不同地方
+而是被绑定在同一个局部对象的生命周期里
+例如：
+
+void foo() {
+    std::lock_guard<std::mutex> guard(mutex);
+    DoSomething();
+}
+这里：
+
+加锁发生在 guard 构造时
+解锁发生在 guard 析构时
+两者都在同一个 scope 中完成
+这样代码更安全，也更容易看懂。
+
+5. “避免在 foo() 里加锁，然后跑到 bar() 里解锁”
+这是在说一种很危险的写法。
+
+例如：
+
+void foo() {
+    mutex.lock();
+    bar();
+}
+void bar() {
+    mutex.unlock();
+}
+这种写法的问题很多：
+
+代码分散，不好读
+容易忘
+一旦中途 return / throw 就可能永远不解锁
+调用链稍微复杂一点就容易死锁
+RAII 的思想就是：
+
+加锁和解锁必须尽量放在一个清晰的局部作用域里。
+
+6. “也避免在不同的语句分支中分别加锁、解锁”
+意思是避免这种代码：
+
+mutex.lock();
+if (ok) {
+    ...
+    mutex.unlock();
+    return;
+} else {
+    ...
+    mutex.unlock();
+}
+这种代码的问题是：
+
+分支一多，很容易漏写 unlock
+出异常时可能不走 unlock
+后续改代码时很容易出错
+而 RAII 写法是：
+
+{
+    std::lock_guard<std::mutex> guard(mutex);
+    if (ok) {
+        return;
+    } else {
+        ...
+    }
+}
+无论怎么分支、怎么 return：
+
+作用域一结束
+guard 自动析构
+锁自动释放
+7. “这种做法被称为 Scoped Locking”
+Scoped Locking 中文可以理解成：
+
+作用域锁
+基于作用域的加锁方式
+核心思想就是：
+
+锁的持有范围 = 一个局部作用域的范围
+
+作用域开始：
+
+锁加上
+作用域结束：
+
+锁释放
+8. 为什么这种方式特别好
+因为它天然防止：
+
+忘记解锁
+提前 return 导致不解锁
+异常路径不解锁
+加锁/解锁分散到多个函数和多个分支
+也就是说：
+
+把“锁管理”变成“对象生命周期管理”
+
+这就是 C++ 很经典的做法。
+
+9. 一个最典型的例子
+不推荐写法
+void foo() {
+    mutex.lock();
+    if (something_wrong()) {
+        return; // 糟糕：没 unlock
+    }
+    mutex.unlock();
+}
+推荐写法
+void foo() {
+    std::lock_guard<std::mutex> guard(mutex);
+    if (something_wrong()) {
+        return; // 没关系，guard 会自动析构并解锁
+    }
+}
+10. 最后一句话总结
+这段话的本质是在说：
+
+不要把锁当成“手工开关”，而要把它交给一个局部 Guard 对象自动管理；这样锁的作用范围和代码作用域一致，最安全，也最符合 C++ 的 RAII 风格。
+
+如果你愿意，我可以继续帮你解释：
+
+lock_guard 和 unique_lock 到底区别是什么
+为什么说“看懂对象何时析构”是 C++ 基本功
